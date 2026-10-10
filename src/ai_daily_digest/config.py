@@ -26,6 +26,8 @@ class Config:
     user_cap: int = 800
     reply_cap: int = 1500
     backfill_days: int = 7
+    # Projects the user has shelved: reports still describe them but list no follow-ups.
+    shelved_projects: list = field(default_factory=list)
     # 滴答清单. The client id/secret come from developer.dida365.com and live in config.toml.
     dida_client_id: str = ""
     dida_client_secret: str = ""

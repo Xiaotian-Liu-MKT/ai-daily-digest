@@ -200,3 +200,39 @@ def test_dida_add_task_sends_quadrant_as_priority_and_all_day_due(monkeypatch):
     dida.add_task(Config(), "交稿", quadrant=2, due=date(2026, 10, 15))
     assert sent["priority"] == 3 and sent["isAllDay"] is True and "projectId" not in sent
     assert dida.parse_due(sent["dueDate"]).astimezone().date() == date(2026, 10, 15)
+
+
+def test_periods_cover_whole_weeks_and_months():
+    from ai_daily_digest.periodic import Period
+
+    week = Period.week_of(date(2026, 10, 10))
+    assert (week.start, week.end, week.label) == (date(2026, 10, 5), date(2026, 10, 11), "2026-W41")
+    assert week.previous().label == "2026-W40"
+    month = Period.month_of(date(2026, 2, 14))
+    assert (month.start, month.end, month.label) == (date(2026, 2, 1), date(2026, 2, 28), "2026-02")
+    assert month.previous().label == "2026-01" and Period.week_of(date(2027, 1, 1)).label == "2026-W53"
+
+
+def test_weekly_report_uses_daily_bodies_and_counts(tmp_path):
+    from ai_daily_digest import periodic
+    from ai_daily_digest.config import Config
+    from ai_daily_digest.sources.worklog import WorklogEntry
+
+    cfg = Config(vault_dir=tmp_path, shelved_projects=["旧项目"])
+    period = periodic.Period.week_of(date(2026, 10, 9))
+    note = periodic.daily_path(cfg, date(2026, 10, 9))
+    note.parent.mkdir(parents=True)
+    note.write_text(
+        "---\ntype: ai-daily-digest\nsessions_claude_code: 7\nsessions_codex: 9\nsessions_agy: 1\n---\n\n"
+        "# AI 日报 2026-10-09\n\n## 概览\n\n做了甲。\n\n## 各项工作\n\n### 甲\n\n完成。\n\n"
+        "## 会话清单\n\n| 工具 |\n", encoding="utf-8")
+    dailies = periodic.read_dailies(cfg, period)
+    front, body = dailies[date(2026, 10, 9)]
+    assert front["sessions_codex"] == "9" and body.startswith("## 概览") and "会话清单" not in body
+    entry = WorklogEntry("20261009-x", "写完甲", "codex-app", "s", "甲", "E:/a", "a", "completed",
+                         "任务摘要", "", ["补附录"], date(2026, 10, 9))
+    bundle = periodic.build_bundle(cfg, period, dailies, [entry], {})
+    assert "## 日报 2026-10-09" in bundle and "旧项目" in bundle and "任务摘要" in bundle
+    text = periodic.render_note(cfg, period, dailies, [entry], "## 本周概览\n\n好。")
+    assert "| 10-09 Fri | 7 | 9 | 1 | 1 |" in text and "| 合计 | 7 | 9 | 1 | 1 | 1/7 天 |" in text
+    assert "- 补附录（甲，[[AI 工作留痕/entries/2026/2026-10/a/20261009-x|写完甲]]）" in text

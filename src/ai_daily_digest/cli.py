@@ -12,7 +12,7 @@ from pathlib import Path
 from .config import Config, load_config
 from .model import Session, Window
 from .render import build_bundle, render_note
-from . import dida
+from . import dida, periodic
 from .sources import agy, claude_code, codex, worklog
 
 log = logging.getLogger("ai_daily_digest")
@@ -48,7 +48,7 @@ def collect(cfg: Config, window: Window) -> list[Session]:
     return sessions
 
 
-def summarize(cfg: Config, bundle: str) -> str:
+def summarize(cfg: Config, bundle: str, marker: str = "## 概览") -> str:
     cfg.state_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
         cfg.claude_cmd, "-p",
@@ -65,9 +65,9 @@ def summarize(cfg: Config, bundle: str) -> str:
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     text = proc.stdout.strip()
-    if proc.returncode != 0 or "## 概览" not in text:
+    if proc.returncode != 0 or marker not in text:
         raise RuntimeError(f"claude exited {proc.returncode}: {(proc.stderr or text)[:500]}")
-    return text[text.index("## 概览"):]
+    return text[text.index(marker):]
 
 
 def dida_section(cfg: Config) -> list[str]:
@@ -118,6 +118,44 @@ def run_day(cfg: Config, day: date, *, force: bool, use_llm: bool, dry_run: bool
     return f"written {target}"
 
 
+def run_period(
+    cfg: Config, period: periodic.Period, today: date, *, force: bool, use_llm: bool, dry_run: bool
+) -> str:
+    target = period.path(cfg)
+    if period.end >= today:
+        return "not over yet"
+    if not force and not dry_run and target.exists():
+        return "skipped"
+    if period.kind == "week" and not dry_run:
+        # A weekly report is only as complete as its dailies; fill the ones still missing.
+        for day in period.days:
+            result = run_day(cfg, day, force=False, use_llm=use_llm, dry_run=False)
+            if result != "skipped":
+                log.info("%s: %s", day, result)
+    dailies = periodic.read_dailies(cfg, period)
+    entries = worklog.collect_range(cfg.vault_dir, period.start, period.end)
+    if not dailies and not entries:
+        return "empty"
+    weeklies = {}
+    if period.kind == "month":
+        week = periodic.Period.week_of(period.start)
+        while week.start <= period.end:
+            if week.path(cfg).exists():
+                weeklies[week.label] = periodic._split(week.path(cfg).read_text(encoding="utf-8"))[1]
+            week = periodic.Period.week_of(week.end + timedelta(days=1))
+    bundle = periodic.build_bundle(cfg, period, dailies, entries, weeklies)
+    if dry_run:
+        out = cfg.state_dir / "bundles" / f"{period.label}.md"
+        _write_atomic(out, bundle)
+        return (
+            f"dry-run: {len(dailies)} dailies, {len(weeklies)} weeklies, {len(entries)} worklog "
+            f"entries, bundle {len(bundle)} chars -> {out}"
+        )
+    body = summarize(cfg, bundle, period.marker) if use_llm else None
+    _write_atomic(target, periodic.render_note(cfg, period, dailies, entries, body, dida_section(cfg)))
+    return f"written {target}"
+
+
 def run_dida(cfg: Config, args, today: date) -> int:
     try:
         if args.dida_command == "auth":
@@ -147,6 +185,12 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--force", action="store_true", help="overwrite an existing digest")
     run.add_argument("--no-llm", action="store_true", help="session lists only, no model call")
     run.add_argument("--dry-run", action="store_true", help="write the model input to state/ and stop")
+    for name, text in (("week", "weekly report (Monday to Sunday)"), ("month", "monthly report")):
+        rep = sub.add_parser(name, help=f"write the {text} for the last finished period")
+        rep.add_argument("--date", type=date.fromisoformat, help="any day inside the period to report")
+        rep.add_argument("--force", action="store_true", help="overwrite an existing report")
+        rep.add_argument("--no-llm", action="store_true", help="statistics only, no model call")
+        rep.add_argument("--dry-run", action="store_true", help="write the model input to state/ and stop")
     dd = sub.add_parser("dida", help="滴答清单: authorize, list upcoming tasks, add a task")
     dsub = dd.add_subparsers(dest="dida_command", required=True)
     dsub.add_parser("auth", help="log in once in the browser")
@@ -174,6 +218,16 @@ def main(argv: list[str] | None = None) -> int:
     today = datetime.now().date()
     if args.command == "dida":
         return run_dida(cfg, args, today)
+    make = {"week": periodic.Period.week_of, "month": periodic.Period.month_of}
+    if args.command in make:
+        period = make[args.command](args.date) if args.date else make[args.command](today).previous()
+        try:
+            result = run_period(cfg, period, today, force=args.force, use_llm=not args.no_llm, dry_run=args.dry_run)
+        except Exception:
+            log.exception("%s failed", period.label)
+            return 1
+        log.info("%s: %s", period.label, result)
+        return 0
     if args.date:
         days = [args.date]
     else:
@@ -192,4 +246,15 @@ def main(argv: list[str] | None = None) -> int:
             failed = True
             continue
         log.info("%s: %s", day, result)
+    if not args.date and not args.dry_run:
+        # The scheduled run also owes the reports of the week and month that just ended.
+        for period in (periodic.Period.week_of(today).previous(), periodic.Period.month_of(today).previous()):
+            try:
+                result = run_period(cfg, period, today, force=False, use_llm=not args.no_llm, dry_run=False)
+            except Exception:
+                log.exception("%s failed", period.label)
+                failed = True
+                continue
+            if result != "skipped":
+                log.info("%s: %s", period.label, result)
     return 1 if failed else 0

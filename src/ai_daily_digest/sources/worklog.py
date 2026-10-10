@@ -20,6 +20,7 @@ class WorklogEntry:
     task_summary: str
     change_summary: str
     open_todos: list[str] = field(default_factory=list)
+    day: date = date.min
 
     def note_link(self, day: date) -> str:
         # Notes are filed by the month in the entry id, which an upsert never changes.
@@ -29,10 +30,18 @@ class WorklogEntry:
 
 
 def collect(vault_dir: Path, day: date) -> list[WorklogEntry]:
+    return collect_range(vault_dir, day, day)
+
+
+def collect_range(vault_dir: Path, start: date, end: date) -> list[WorklogEntry]:
+    """Entries whose date falls in [start, end]."""
     records = vault_dir / ".ai-worklog" / "records"
     entries = []
     # A record stays in the month it was first written, while upserts move its date forward.
-    months = {f"{day - timedelta(days=31):%Y-%m}", f"{day:%Y-%m}", f"{day + timedelta(days=3):%Y-%m}"}
+    months, cursor = set(), start - timedelta(days=31)
+    while cursor <= end + timedelta(days=3):
+        months.add(f"{cursor:%Y-%m}")
+        cursor += timedelta(days=1)
     for month in sorted(months):
         for path in sorted((records / month).glob("*.json")):
             try:
@@ -40,7 +49,11 @@ def collect(vault_dir: Path, day: date) -> list[WorklogEntry]:
             except (OSError, ValueError):
                 continue
             entry = data.get("entry") or {}
-            if entry.get("date") != day.isoformat():
+            try:
+                day = date.fromisoformat(entry.get("date") or "")
+            except ValueError:
+                continue
+            if not start <= day <= end:
                 continue
             producer = data.get("producer") or {}
             entries.append(
@@ -56,6 +69,7 @@ def collect(vault_dir: Path, day: date) -> list[WorklogEntry]:
                     task_summary=entry.get("task_summary", ""),
                     change_summary=entry.get("change_summary", ""),
                     open_todos=list(entry.get("todo_open_texts") or []),
+                    day=day,
                 )
             )
     return entries

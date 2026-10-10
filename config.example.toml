@@ -8,3 +8,6 @@ dida_client_id = ""
 dida_client_secret = ""
 dida_redirect_uri = "http://127.0.0.1:8765/callback"
 dida_due_days = 7
+
+# Shelved projects: reports describe them but list no follow-ups.
+shelved_projects = []
