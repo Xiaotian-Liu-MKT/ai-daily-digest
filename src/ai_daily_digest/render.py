@@ -103,7 +103,7 @@ def _title(session: Session) -> str:
     return _clip(first.splitlines()[0] if first else "(无标题)", 40)
 
 
-_TOOL_FAMILY = {"Claude Code": "claude", "Codex": "codex"}
+_TOOL_FAMILY = {"Claude Code": "claude", "Codex": "codex", "agy": ("agy", "antigravity")}
 
 
 def _norm(path: str) -> str:

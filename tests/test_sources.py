@@ -151,14 +151,17 @@ def test_worklog_matches_by_alias_then_by_tool_and_folder():
 
     root = Session("Codex", "t1", cwd="E:\\Proj\\Paper", aliases={"sub1"})
     other = Session("Claude Code", "c1", cwd="E:\\Proj\\Paper")
-    by_id, by_path = match_worklog([root, other], [
+    third = Session("agy", "a1", cwd="E:\\Proj\\Paper\\draft")
+    by_id, by_path = match_worklog([root, other, third], [
         entry("sub1", "codex-app", "E:/Proj/Paper"),
         entry("made-up-slug", "codex-app", "E:/proj/paper/"),
         entry("typo", "claude-code", "E:/Elsewhere"),
+        entry("agy-slug", "agy-cli", "E:/Proj/Paper"),
     ])
     assert [e.entry_id for e in by_id["t1"]] == ["sub1"]
     assert [e.entry_id for e in by_path["t1"]] == ["made-up-slug"]
     assert "c1" not in by_id and "c1" not in by_path
+    assert [e.entry_id for e in by_path["a1"]] == ["agy-slug"]
 
 
 def test_dida_due_tasks_filters_by_horizon_and_maps_priority_to_quadrant(monkeypatch):
