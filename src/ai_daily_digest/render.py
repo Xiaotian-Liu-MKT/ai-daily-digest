@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
 from .config import Config
 from .model import Session, Window
@@ -56,7 +57,49 @@ def _title(session: Session) -> str:
     return _clip(first.splitlines()[0] if first else "(无标题)", 40)
 
 
-def _session_block(session: Session, logged: list[WorklogEntry], user_cap: int, reply_cap: int) -> str:
+_TOOL_FAMILY = {"Claude Code": "claude", "Codex": "codex"}
+
+
+def _norm(path: str) -> str:
+    return path.replace("\\", "/").rstrip("/").lower()
+
+
+def _same_tree(a: str, b: str) -> bool:
+    return a == b or a.startswith(b + "/") or b.startswith(a + "/")
+
+
+def match_worklog(
+    sessions: list[Session], entries: list[WorklogEntry]
+) -> tuple[dict[str, list[WorklogEntry]], dict[str, list[WorklogEntry]]]:
+    """Attach worklog entries to sessions: by session id, else by tool and project folder.
+
+    The recorded session id is typed by an agent, so it is sometimes a slug, a
+    subagent's thread or a mistyped uuid. The folder match is weaker: every session
+    of that tool in the folder gets the entry.
+    """
+    by_id: dict[str, list[WorklogEntry]] = {}
+    by_path: dict[str, list[WorklogEntry]] = {}
+    ids = {alias: s.session_id for s in sessions for alias in (s.session_id, *s.aliases)}
+    home = _norm(str(Path.home()))
+    for e in entries:
+        if e.session_id in ids:
+            by_id.setdefault(ids[e.session_id], []).append(e)
+            continue
+        path = _norm(e.project_path)
+        if not path or path == home:
+            continue
+        for s in sessions:
+            cwd = _norm(s.cwd)
+            family = _TOOL_FAMILY.get(s.tool)
+            if family and e.tool.startswith(family) and cwd and cwd != home and _same_tree(cwd, path):
+                by_path.setdefault(s.session_id, []).append(e)
+    return by_id, by_path
+
+
+def _session_block(
+    session: Session, logged: list[WorklogEntry], nearby: list[WorklogEntry],
+    user_cap: int, reply_cap: int,
+) -> str:
     head = f"### [{session.tool}] {_title(session)}"
     meta = [f"目录 {session.cwd or '?'}", f"时间 {_span(session)}", f"{session.human_turns} 条用户输入"]
     if session.subagents:
@@ -65,6 +108,8 @@ def _session_block(session: Session, logged: list[WorklogEntry], user_cap: int, 
         meta.append("续之前的会话")
     if logged:
         meta.append("已留痕：" + "；".join(e.title for e in logged))
+    if nearby:
+        meta.append("同目录留痕：" + "；".join(e.title for e in nearby))
     lines = [head, " | ".join(meta)]
     lines += [f"[进展回顾] {_clip(n, reply_cap)}" for n in session.notes]
     for turn in session.turns:
@@ -92,15 +137,15 @@ def _worklog_block(entries: list[WorklogEntry]) -> str:
 def build_bundle(
     window: Window, sessions: list[Session], entries: list[WorklogEntry], cfg: Config
 ) -> str:
-    by_session: dict[str, list[WorklogEntry]] = {}
-    for e in entries:
-        by_session.setdefault(e.session_id, []).append(e)
+    by_id, by_path = match_worklog(sessions, entries)
     tz = datetime.now().astimezone().strftime("UTC%z")
     head = INSTRUCTIONS.format(day=window.day.isoformat(), tz=tz) + _worklog_block(entries)
     user_cap, reply_cap = cfg.user_cap, cfg.reply_cap
     while True:
         blocks = [
-            _session_block(s, by_session.get(s.session_id, []), user_cap, reply_cap)
+            _session_block(
+                s, by_id.get(s.session_id, []), by_path.get(s.session_id, []), user_cap, reply_cap
+            )
             for s in sessions
         ]
         bundle = head + "\n\n## 会话摘录\n\n" + "\n\n".join(blocks)
@@ -123,7 +168,11 @@ def render_note(
     model: str,
 ) -> str:
     day = window.day
-    logged_ids = {e.session_id for e in entries}
+    by_id, by_path = match_worklog(sessions, entries)
+
+    def _logged(s: Session) -> str:
+        return "有" if s.session_id in by_id else "同目录" if s.session_id in by_path else ""
+
     counts = {tool: sum(1 for s in sessions if s.tool == tool) for tool in ("Claude Code", "Codex", "agy")}
     front = [
         "---",
@@ -146,11 +195,11 @@ def render_note(
     for s in sorted(sessions, key=lambda s: s.first_ts or window.start):
         out.append(
             f"| {s.tool} | {_cell(_title(s))} | `{_cell(s.cwd)}` | {_span(s)} | {s.human_turns} "
-            f"| {s.subagents or ''} | {'有' if s.session_id in logged_ids else ''} |"
+            f"| {s.subagents or ''} | {_logged(s)} |"
         )
     out += ["", "## 当日留痕记录", ""]
     out += [f"- {e.note_link(day)}（{e.tool}，{e.status}）" for e in entries] or ["无"]
-    unlogged = [s for s in sessions if s.session_id not in logged_ids]
+    unlogged = [s for s in sessions if not _logged(s)]
     out += ["", "## 没有对应留痕的会话", ""]
     out += [f"- [{s.tool}] {_cell(_title(s))}（`{s.cwd}`，{s.human_turns} 条输入）" for s in unlogged] or ["无"]
     return "\n".join(out) + "\n"

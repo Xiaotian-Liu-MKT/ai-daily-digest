@@ -14,6 +14,7 @@ class WorklogEntry:
     tool: str
     session_id: str
     project: str
+    project_path: str
     scope_key: str
     status: str
     task_summary: str
@@ -49,6 +50,7 @@ def collect(vault_dir: Path, day: date) -> list[WorklogEntry]:
                     tool=producer.get("tool_name", ""),
                     session_id=producer.get("session_id", ""),
                     project=entry.get("project_name") or entry.get("scope_key", ""),
+                    project_path=entry.get("project_path") or "",
                     scope_key=entry.get("scope_key", "_general"),
                     status=entry.get("status", ""),
                     task_summary=entry.get("task_summary", ""),

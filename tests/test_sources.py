@@ -139,3 +139,23 @@ def test_agy_reads_only_conversations_the_user_typed_into(tmp_path):
     assert session.session_id == "c1" and session.cwd == "C:\\w"
     assert [(t.user, t.reply) for t in session.turns] == [("audit skills", "report ready")]
     assert session.notes == ["Task Overview"]
+
+
+def test_worklog_matches_by_alias_then_by_tool_and_folder():
+    from ai_daily_digest.model import Session
+    from ai_daily_digest.render import match_worklog
+    from ai_daily_digest.sources.worklog import WorklogEntry
+
+    def entry(sid, tool, path):
+        return WorklogEntry(sid, sid, tool, sid, "p", path, "s", "completed", "", "")
+
+    root = Session("Codex", "t1", cwd="E:\\Proj\\Paper", aliases={"sub1"})
+    other = Session("Claude Code", "c1", cwd="E:\\Proj\\Paper")
+    by_id, by_path = match_worklog([root, other], [
+        entry("sub1", "codex-app", "E:/Proj/Paper"),
+        entry("made-up-slug", "codex-app", "E:/proj/paper/"),
+        entry("typo", "claude-code", "E:/Elsewhere"),
+    ])
+    assert [e.entry_id for e in by_id["t1"]] == ["sub1"]
+    assert [e.entry_id for e in by_path["t1"]] == ["made-up-slug"]
+    assert "c1" not in by_id and "c1" not in by_path

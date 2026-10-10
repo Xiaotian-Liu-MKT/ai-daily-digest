@@ -106,6 +106,7 @@ def collect(codex_dir: Path, window: Window) -> list[Session]:
     sessions: dict[str, Session] = {}
     events: dict[str, list] = {}
     children: dict[str, int] = {}
+    parents: dict[str, str] = {}
     seen: set = set()
     for path in sorted(_rollouts(codex_dir, window)):
         meta = _meta(path)
@@ -114,6 +115,9 @@ def collect(codex_dir: Path, window: Window) -> list[Session]:
         created = meta.get("_ts")
         if meta.get("thread_source") == "subagent" or isinstance(meta.get("source"), dict):
             parent = _parent_of(meta)
+            child = meta.get("id")  # session_id is the root thread for subagents
+            if parent and child:
+                parents[child] = parent
             if parent and created and created < window.end:
                 children[parent] = children.get(parent, 0) + 1
             continue
@@ -127,6 +131,13 @@ def collect(codex_dir: Path, window: Window) -> list[Session]:
         if created and created < window.start:
             session.continued = True
         _read_events(path, window, seen, session, events.setdefault(sid, []))
+    # A worklog written by a subagent may carry that subagent's thread id.
+    for child in parents:
+        root, hops = child, 0
+        while root in parents and hops < 10:
+            root, hops = parents[root], hops + 1
+        if root in sessions:
+            sessions[root].aliases.add(child)
     result = []
     for sid, session in sessions.items():
         session.turns = build_turns(events[sid])

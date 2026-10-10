@@ -86,6 +86,8 @@ class Session:
     subagents: int = 0
     continued: bool = False
     last_ts: datetime | None = None
+    # Other ids that mean this session, e.g. the threads of its subagents.
+    aliases: set[str] = field(default_factory=set)
 
     @property
     def first_ts(self) -> datetime | None:
