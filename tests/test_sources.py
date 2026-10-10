@@ -234,5 +234,23 @@ def test_weekly_report_uses_daily_bodies_and_counts(tmp_path):
     bundle = periodic.build_bundle(cfg, period, dailies, [entry], {})
     assert "## 日报 2026-10-09" in bundle and "旧项目" in bundle and "任务摘要" in bundle
     text = periodic.render_note(cfg, period, dailies, [entry], "## 本周概览\n\n好。")
-    assert "| 10-09 Fri | 7 | 9 | 1 | 1 |" in text and "| 合计 | 7 | 9 | 1 | 1 | 1/7 天 |" in text
-    assert "- 补附录（甲，[[AI 工作留痕/entries/2026/2026-10/a/20261009-x|写完甲]]）" in text
+    assert "> | 10-09 Fri | 7 | 9 | 1 | 1 |" in text and "> | 合计 | 7 | 9 | 1 | 1 | 1/7 天 |" in text
+    assert "> - 补附录（甲，[[AI 工作留痕/entries/2026/2026-10/a/20261009-x|写完甲]]）" in text
+    # A report's own appendix must not leak into the body the monthly report reads.
+    assert periodic._split(text)[1] == "## 本周概览\n\n好。"
+
+
+def test_disclose_folds_project_detail_but_keeps_overview_and_top_items():
+    from ai_daily_digest.periodic import disclose
+
+    body = "\n".join([
+        "## 本周概览", "", "总述。", "", "## 一句话进展", "", "- **甲**：完成", "",
+        "## 各项目进展", "", "### 甲", "", "细节一", "", "- 细节二", "",
+        "## 未完成与待跟进", "", "- 甲：最要紧", "", "### 甲", "", "- 全部一", "",
+        "## 值得留意", "", "### 不折叠", "", "无",
+    ])
+    text = disclose(body)
+    assert "## 一句话进展\n\n- **甲**：完成" in text and "\n- 甲：最要紧\n" in text
+    assert "> [!abstract]- 甲\n>\n> 细节一\n>\n> - 细节二\n" in text
+    assert "> [!abstract]- 甲\n>\n> - 全部一\n" in text
+    assert "### 不折叠" in text and "### 甲" not in text

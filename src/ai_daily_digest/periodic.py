@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from .config import Config
+from .render import APPENDIX, fold
 from .sources.worklog import WorklogEntry
 
 _FRONT = re.compile(r"\A---\n(.*?)\n---\n", re.S)
@@ -24,16 +25,19 @@ _RULES = """写作要求：
 _WEEK = """你在为用户本人写一份 AI 协作工作周报，覆盖 {label}（{start} 至 {end}）。下面的材料是这一周每天的日报正文，以及这一周写入的工作留痕记录。
 
 {rules}{shelved}
-只输出下面四个二级标题及其内容，不要输出一级标题、frontmatter、前言或结语：
+只输出下面五个二级标题及其内容，不要输出一级标题、frontmatter、前言或结语：
 
 ## 本周概览
 三到五句话，说清这一周主要推进了什么、整体进度如何。
 
+## 一句话进展
+每个项目或主题一行，格式为 `- **项目名**：一句话说清这一周的结果和周末时的状态`。读者只看这一节就应当知道每件事到哪了。
+
 ## 各项目进展
-每个项目或主题一个三级标题，写这一周做成了什么、关键结论或产物、周末时的状态。
+每个项目或主题一个三级标题（与上一节的项目名一致），写这一周做成了什么、关键结论或产物、周末时的状态。这一节会被折叠，可以写细。
 
 ## 未完成与待跟进
-列出到周末仍未完成、被搁置、或明确留到之后做的事，按项目归并。没有就写"无"。
+先直接列出最要紧的至多五条（不加小标题），每条带上项目名；再按项目各用一个三级标题列出完整清单。没有就写"无"。
 
 ## 值得留意
 这一周做出的重要决定、反复出现的问题或风险。没有就写"无"。
@@ -45,16 +49,19 @@ _WEEK = """你在为用户本人写一份 AI 协作工作周报，覆盖 {label}
 _MONTH = """你在为用户本人写一份 AI 协作工作月报，覆盖 {label}（{start} 至 {end}）。下面的材料是与这个月重叠的各周周报、这个月每天的日报概览，以及这个月工作留痕记录的汇总。周报可能包含相邻月份的几天，只写属于这个月的内容。
 
 {rules}{shelved}
-只输出下面四个二级标题及其内容，不要输出一级标题、frontmatter、前言或结语：
+只输出下面五个二级标题及其内容，不要输出一级标题、frontmatter、前言或结语：
 
 ## 本月概览
 四到六句话，说清这个月的主线、完成了哪些有分量的事。
 
+## 一句话进展
+每个项目或主题一行，格式为 `- **项目名**：一句话说清这个月的结果和月末时的状态`。读者只看这一节就应当知道每件事到哪了。
+
 ## 各项目进展
-每个项目或主题一个三级标题，写这个月的进展、关键结论或产物、月末时的状态。
+每个项目或主题一个三级标题（与上一节的项目名一致），写这个月的进展、关键结论或产物、月末时的状态。这一节会被折叠，可以写细。
 
 ## 未完成与待跟进
-列出到月末仍未完成、被搁置、或留到下个月的事，按项目归并。没有就写"无"。
+先直接列出最要紧的至多五条（不加小标题），每条带上项目名；再按项目各用一个三级标题列出完整清单。没有就写"无"。
 
 ## 值得留意
 这个月做出的重要决定、反复出现的问题或风险。没有就写"无"。
@@ -125,7 +132,7 @@ def _split(text: str) -> tuple[dict[str, str], str]:
     start = text.find("\n## ")
     body = text[start + 1:] if start >= 0 else ""
     # Everything from the first generated appendix on is tables and links, not prose.
-    for heading in ("\n## 滴答清单", "\n## 会话清单", "\n## 每日统计"):
+    for heading in ("\n## 滴答清单", "\n## 会话清单", "\n## 每日统计", "\n" + APPENDIX):
         cut = body.find(heading)
         if cut >= 0:
             body = body[:cut]
@@ -135,6 +142,44 @@ def _split(text: str) -> tuple[dict[str, str], str]:
 def _overview(body: str) -> str:
     m = re.search(r"^## 概览\n+(.*?)(?=^## |\Z)", body, re.S | re.M)
     return m.group(1).strip() if m else ""
+
+
+_FOLDED_SECTIONS = ("各项", "未完成")
+
+
+def disclose(body: str) -> str:
+    """Collapse the per-project detail so the report opens as an overview.
+
+    Under the detail sections every `### project` block becomes a folded callout;
+    whatever precedes the first block (the short top-priority list) stays visible.
+    """
+    out: list[str] = []
+    folding = False
+    block: list[str] | None = None
+    title = ""
+
+    def flush():
+        nonlocal block
+        if block is not None:
+            while block and not block[-1].strip():
+                block.pop()
+            out.extend(fold(title, block, "abstract"))
+            block = None
+
+    for line in body.splitlines():
+        if line.startswith("## "):
+            flush()
+            folding = line[3:].strip().startswith(_FOLDED_SECTIONS)
+            out.append(line)
+        elif folding and line.startswith("### "):
+            flush()
+            title, block = line[4:].strip(), []
+        elif block is not None:
+            block.append(line)
+        else:
+            out.append(line)
+    flush()
+    return "\n".join(out).strip()
 
 
 def read_dailies(cfg: Config, period: Period) -> dict[date, tuple[dict[str, str], str]]:
@@ -216,12 +261,12 @@ def render_note(
         "",
         f"# {period.title}",
         "",
-        body.strip() if body else "> 本篇未调用模型，只有下面的统计。",
+        disclose(body) if body else "> 本篇未调用模型，只有下面的统计。",
         "",
     ]
     out += extra or []
 
-    out += ["## 每日统计", "", "| 日期 | Claude Code | Codex | agy | 留痕 | 日报 |", "|---|---|---|---|---|---|"]
+    table = ["| 日期 | Claude Code | Codex | agy | 留痕 | 日报 |", "|---|---|---|---|---|---|"]
     totals = [0, 0, 0, 0]
     per_day: dict[date, int] = {}
     for e in entries:
@@ -234,21 +279,24 @@ def render_note(
         totals = [a + b for a, b in zip(totals, counts)]
         # Inside a table the alias separator must be escaped or it splits the cell.
         link = f"[[{cfg.digest_folder}/{day:%Y}/{day.isoformat()}\\|{day:%m-%d}]]" if day in dailies else ""
-        out.append(f"| {day:%m-%d %a} | {counts[0] or ''} | {counts[1] or ''} | {counts[2] or ''} | {counts[3] or ''} | {link} |")
-    out.append(f"| 合计 | {totals[0]} | {totals[1]} | {totals[2]} | {totals[3]} | {len(dailies)}/{len(period.days)} 天 |")
+        table.append(f"| {day:%m-%d %a} | {counts[0] or ''} | {counts[1] or ''} | {counts[2] or ''} | {counts[3] or ''} | {link} |")
+    table.append(f"| 合计 | {totals[0]} | {totals[1]} | {totals[2]} | {totals[3]} | {len(dailies)}/{len(period.days)} 天 |")
+    out += fold(f"每日统计（日报 {len(dailies)}/{len(period.days)} 天）", table)
 
-    out += ["", "## 期内留痕按项目", ""]
     by_project: dict[str, int] = {}
     for e in entries:
         by_project[e.project or e.scope_key] = by_project.get(e.project or e.scope_key, 0) + 1
-    out += [f"- {name}：{n} 条" for name, n in sorted(by_project.items(), key=lambda kv: -kv[1])] or ["无"]
+    out += fold(
+        f"期内留痕按项目（{len(entries)} 条）",
+        [f"- {name}：{n} 条" for name, n in sorted(by_project.items(), key=lambda kv: -kv[1])] or ["无"],
+    )
 
     todos = [(e, t) for e in entries for t in e.open_todos]
-    out += ["", "## 留痕里仍未完成的待办", ""]
-    if not todos:
-        out.append("无")
-    for e, text in todos[:_TODO_CAP]:
-        out.append(f"- {_clip(text, 200)}（{e.project or e.scope_key}，{e.note_link(e.day)}）")
+    lines = [
+        f"- {_clip(text, 200)}（{e.project or e.scope_key}，{e.note_link(e.day)}）"
+        for e, text in todos[:_TODO_CAP]
+    ] or ["无"]
     if len(todos) > _TODO_CAP:
-        out.append(f"- 另有 {len(todos) - _TODO_CAP} 条未列出")
+        lines.append(f"- 另有 {len(todos) - _TODO_CAP} 条未列出")
+    out += fold(f"留痕里仍未完成的待办（{len(todos)} 条）", lines)
     return "\n".join(out) + "\n"

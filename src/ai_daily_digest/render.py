@@ -37,6 +37,14 @@ INSTRUCTIONS = """你在为用户本人写一份 AI 协作工作日报。下面�
 """
 
 
+APPENDIX = "> [!info]- "
+
+
+def fold(title: str, lines: list[str], kind: str = "info") -> list[str]:
+    """An Obsidian callout that starts collapsed, so detail stays one click away."""
+    return [f"> [!{kind}]- {title}"] + [f"> {line}".rstrip() for line in lines] + [""]
+
+
 def _clip(text: str, cap: int) -> str:
     text = text.strip()
     return text if len(text) <= cap else text[:cap].rstrip() + f"…（截断，原文 {len(text)} 字）"
@@ -193,15 +201,20 @@ def render_note(
     out = front + [body.strip() if body else "> 本篇未调用模型，只有下面的会话清单。", ""]
     out += extra or []
 
-    out += ["## 会话清单", "", "| 工具 | 会话 | 目录 | 时间 | 输入 | 子 agent | 留痕 |", "|---|---|---|---|---|---|---|"]
+    table = ["| 工具 | 会话 | 目录 | 时间 | 输入 | 子 agent | 留痕 |", "|---|---|---|---|---|---|---|"]
     for s in sorted(sessions, key=lambda s: s.first_ts or window.start):
-        out.append(
+        table.append(
             f"| {s.tool} | {_cell(_title(s))} | `{_cell(s.cwd)}` | {_span(s)} | {s.human_turns} "
             f"| {s.subagents or ''} | {_logged(s)} |"
         )
-    out += ["", "## 当日留痕记录", ""]
-    out += [f"- {e.note_link(day)}（{e.tool}，{e.status}）" for e in entries] or ["无"]
+    out += fold(f"会话清单（{len(sessions)} 个）", table)
+    out += fold(
+        f"当日留痕记录（{len(entries)} 条）",
+        [f"- {e.note_link(day)}（{e.tool}，{e.status}）" for e in entries] or ["无"],
+    )
     unlogged = [s for s in sessions if not _logged(s)]
-    out += ["", "## 没有对应留痕的会话", ""]
-    out += [f"- [{s.tool}] {_cell(_title(s))}（`{s.cwd}`，{s.human_turns} 条输入）" for s in unlogged] or ["无"]
+    out += fold(
+        f"没有对应留痕的会话（{len(unlogged)} 个）",
+        [f"- [{s.tool}] {_cell(_title(s))}（`{s.cwd}`，{s.human_turns} 条输入）" for s in unlogged] or ["无"],
+    )
     return "\n".join(out) + "\n"
