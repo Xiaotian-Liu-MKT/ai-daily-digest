@@ -1,0 +1,10 @@
+# Copy to config.toml (git-ignored) and fill in. Every key of Config in
+# src/ai_daily_digest/config.py can be overridden here.
+
+# 滴答清单: create an app at https://developer.dida365.com/manage and set its
+# OAuth redirect URL to the value of dida_redirect_uri, then run
+#   .venv\Scripts\python -m ai_daily_digest dida auth
+dida_client_id = ""
+dida_client_secret = ""
+dida_redirect_uri = "http://127.0.0.1:8765/callback"
+dida_due_days = 7

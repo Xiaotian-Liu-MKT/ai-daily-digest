@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -26,6 +26,13 @@ class Config:
     user_cap: int = 800
     reply_cap: int = 1500
     backfill_days: int = 7
+    # 滴答清单. The client id/secret come from developer.dida365.com and live in config.toml.
+    dida_client_id: str = ""
+    dida_client_secret: str = ""
+    dida_redirect_uri: str = "http://127.0.0.1:8765/callback"
+    dida_due_days: int = 7
+    # API priority -> quadrant of the app's matrix view (its default rules).
+    dida_quadrants: dict = field(default_factory=lambda: {"5": 1, "3": 2, "1": 3, "0": 4})
 
 
 def load_config(path: Path | None = None) -> Config:

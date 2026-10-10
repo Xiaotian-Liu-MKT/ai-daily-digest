@@ -166,6 +166,7 @@ def render_note(
     entries: list[WorklogEntry],
     body: str | None,
     model: str,
+    extra: list[str] | None = None,
 ) -> str:
     day = window.day
     by_id, by_path = match_worklog(sessions, entries)
@@ -190,6 +191,7 @@ def render_note(
         "",
     ]
     out = front + [body.strip() if body else "> 本篇未调用模型，只有下面的会话清单。", ""]
+    out += extra or []
 
     out += ["## 会话清单", "", "| 工具 | 会话 | 目录 | 时间 | 输入 | 子 agent | 留痕 |", "|---|---|---|---|---|---|---|"]
     for s in sorted(sessions, key=lambda s: s.first_ts or window.start):

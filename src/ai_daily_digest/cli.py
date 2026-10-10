@@ -6,12 +6,13 @@ import logging
 import os
 import subprocess
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 from .config import Config, load_config
 from .model import Session, Window
 from .render import build_bundle, render_note
+from . import dida
 from .sources import agy, claude_code, codex, worklog
 
 log = logging.getLogger("ai_daily_digest")
@@ -69,6 +70,20 @@ def summarize(cfg: Config, bundle: str) -> str:
     return text[text.index("## 概览"):]
 
 
+def dida_section(cfg: Config) -> list[str]:
+    """Upcoming 滴答清单 tasks, as of the moment the digest is written."""
+    today = datetime.now().date()
+    try:
+        tasks = dida.due_tasks(cfg, today)
+    except dida.NotConfigured as exc:
+        log.info("dida skipped: %s", exc)
+        return []
+    except dida.DidaError as exc:
+        log.warning("dida failed: %s", exc)
+        return [f"## 滴答清单：{cfg.dida_due_days} 天内到期", "", f"> 读取失败：{exc}", ""]
+    return dida.render_section(tasks, today, cfg.dida_due_days)
+
+
 def _write_atomic(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -97,8 +112,30 @@ def run_day(cfg: Config, day: date, *, force: bool, use_llm: bool, dry_run: bool
             f"entries, bundle {len(bundle)} chars -> {out}"
         )
     body = summarize(cfg, bundle) if use_llm else None
-    _write_atomic(target, render_note(window, sessions, entries, body, cfg.model))
+    _write_atomic(
+        target, render_note(window, sessions, entries, body, cfg.model, dida_section(cfg))
+    )
     return f"written {target}"
+
+
+def run_dida(cfg: Config, args, today: date) -> int:
+    try:
+        if args.dida_command == "auth":
+            dida.authorize(cfg)
+            print("已授权。")
+        elif args.dida_command == "lists":
+            print("\n".join(p["name"] for p in dida.projects(cfg)))
+        elif args.dida_command == "due":
+            days = args.days if args.days is not None else cfg.dida_due_days
+            print("\n".join(dida.render_section(dida.due_tasks(cfg, today, days), today, days)))
+        else:
+            task = dida.add_task(cfg, args.title, quadrant=args.quadrant, due=args.due,
+                                 due_time=args.time, project=args.project, note=args.note)
+            print(f"已添加：{task.get('title')}（{dida.QUADRANT_NAMES[args.quadrant]}，id {task.get('id')}）")
+    except dida.DidaError as exc:
+        print(f"滴答清单：{exc}")
+        return 1
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -110,6 +147,20 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--force", action="store_true", help="overwrite an existing digest")
     run.add_argument("--no-llm", action="store_true", help="session lists only, no model call")
     run.add_argument("--dry-run", action="store_true", help="write the model input to state/ and stop")
+    dd = sub.add_parser("dida", help="滴答清单: authorize, list upcoming tasks, add a task")
+    dsub = dd.add_subparsers(dest="dida_command", required=True)
+    dsub.add_parser("auth", help="log in once in the browser")
+    due = dsub.add_parser("due", help="print open tasks due soon")
+    due.add_argument("--days", type=int)
+    dsub.add_parser("lists", help="print list names")
+    add = dsub.add_parser("add", help="add one task")
+    add.add_argument("title")
+    add.add_argument("--quadrant", type=int, choices=(1, 2, 3, 4), required=True,
+                     help="1 重要且紧急, 2 重要不紧急, 3 不重要但紧急, 4 不重要不紧急")
+    add.add_argument("--due", type=date.fromisoformat, help="YYYY-MM-DD")
+    add.add_argument("--time", type=time.fromisoformat, help="HH:MM; omit for an all-day task")
+    add.add_argument("--list", dest="project", help="list name; default is the inbox")
+    add.add_argument("--note", default="")
     args = parser.parse_args(argv)
 
     cfg = load_config()
@@ -121,6 +172,8 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", handlers=handlers)
 
     today = datetime.now().date()
+    if args.command == "dida":
+        return run_dida(cfg, args, today)
     if args.date:
         days = [args.date]
     else:
