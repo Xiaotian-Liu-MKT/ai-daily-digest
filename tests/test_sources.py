@@ -241,7 +241,7 @@ def test_weekly_report_uses_daily_bodies_and_counts(tmp_path):
 
 
 def test_disclose_folds_project_detail_but_keeps_overview_and_top_items():
-    from ai_daily_digest.periodic import disclose
+    from ai_daily_digest.render import disclose
 
     body = "\n".join([
         "## 本周概览", "", "总述。", "", "## 一句话进展", "", "- **甲**：完成", "",

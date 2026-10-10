@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from .config import Config
-from .render import APPENDIX, fold
+from .render import APPENDIX, disclose, fold
 from .sources.worklog import WorklogEntry
 
 _FRONT = re.compile(r"\A---\n(.*?)\n---\n", re.S)
@@ -142,44 +142,6 @@ def _split(text: str) -> tuple[dict[str, str], str]:
 def _overview(body: str) -> str:
     m = re.search(r"^## 概览\n+(.*?)(?=^## |\Z)", body, re.S | re.M)
     return m.group(1).strip() if m else ""
-
-
-_FOLDED_SECTIONS = ("各项", "未完成")
-
-
-def disclose(body: str) -> str:
-    """Collapse the per-project detail so the report opens as an overview.
-
-    Under the detail sections every `### project` block becomes a folded callout;
-    whatever precedes the first block (the short top-priority list) stays visible.
-    """
-    out: list[str] = []
-    folding = False
-    block: list[str] | None = None
-    title = ""
-
-    def flush():
-        nonlocal block
-        if block is not None:
-            while block and not block[-1].strip():
-                block.pop()
-            out.extend(fold(title, block, "abstract"))
-            block = None
-
-    for line in body.splitlines():
-        if line.startswith("## "):
-            flush()
-            folding = line[3:].strip().startswith(_FOLDED_SECTIONS)
-            out.append(line)
-        elif folding and line.startswith("### "):
-            flush()
-            title, block = line[4:].strip(), []
-        elif block is not None:
-            block.append(line)
-        else:
-            out.append(line)
-    flush()
-    return "\n".join(out).strip()
 
 
 def read_dailies(cfg: Config, period: Period) -> dict[date, tuple[dict[str, str], str]]:

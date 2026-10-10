@@ -24,10 +24,10 @@ INSTRUCTIONS = """你在为用户本人写一份 AI 协作工作日报。下面�
 三到五句话，说清这一天主要在推进什么。
 
 ## 各项工作
-每个项目或主题一个三级标题，下面用短段落或列表写做了什么、结论或产物、状态。
+每个项目或主题一个三级标题，下面用短段落或列表写做了什么、结论或产物、状态。这一节会被折叠，标题要让人一眼看出是哪件事。
 
 ## 未完成与待跟进
-列出明确没做完、被搁置、或者用户说了稍后再做的事。没有就写"无"。
+先直接列出最要紧的至多五条（不加小标题），每条带上项目名；再按项目各用一个三级标题列出完整清单，包括明确没做完、被搁置、或者用户说了稍后再做的事。没有就写"无"。
 
 ## 值得留意
 当天做出的重要决定、发现的问题或风险。没有就写"无"。
@@ -43,6 +43,44 @@ APPENDIX = "> [!info]- "
 def fold(title: str, lines: list[str], kind: str = "info") -> list[str]:
     """An Obsidian callout that starts collapsed, so detail stays one click away."""
     return [f"> [!{kind}]- {title}"] + [f"> {line}".rstrip() for line in lines] + [""]
+
+
+_FOLDED_SECTIONS = ("各项", "未完成")
+
+
+def disclose(body: str) -> str:
+    """Collapse the per-project detail so the report opens as an overview.
+
+    Under the detail sections every `### project` block becomes a folded callout;
+    whatever precedes the first block (the short top-priority list) stays visible.
+    """
+    out: list[str] = []
+    folding = False
+    block: list[str] | None = None
+    title = ""
+
+    def flush():
+        nonlocal block
+        if block is not None:
+            while block and not block[-1].strip():
+                block.pop()
+            out.extend(fold(title, block, "abstract"))
+            block = None
+
+    for line in body.splitlines():
+        if line.startswith("## "):
+            flush()
+            folding = line[3:].strip().startswith(_FOLDED_SECTIONS)
+            out.append(line)
+        elif folding and line.startswith("### "):
+            flush()
+            title, block = line[4:].strip(), []
+        elif block is not None:
+            block.append(line)
+        else:
+            out.append(line)
+    flush()
+    return "\n".join(out).strip()
 
 
 def _clip(text: str, cap: int) -> str:
@@ -198,7 +236,7 @@ def render_note(
         f"# AI 日报 {day.isoformat()}",
         "",
     ]
-    out = front + [body.strip() if body else "> 本篇未调用模型，只有下面的会话清单。", ""]
+    out = front + [disclose(body) if body else "> 本篇未调用模型，只有下面的会话清单。", ""]
     out += extra or []
 
     table = ["| 工具 | 会话 | 目录 | 时间 | 输入 | 子 agent | 留痕 |", "|---|---|---|---|---|---|---|"]
