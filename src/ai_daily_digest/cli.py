@@ -12,7 +12,7 @@ from pathlib import Path
 from .config import Config, load_config
 from .model import Session, Window
 from .render import build_bundle, render_note
-from . import dida, periodic
+from . import dida, latest, periodic
 from .sources import agy, claude_code, codex, worklog
 
 log = logging.getLogger("ai_daily_digest")
@@ -156,6 +156,16 @@ def run_period(
     return f"written {target}"
 
 
+def refresh_latest(cfg: Config) -> None:
+    try:
+        result = latest.refresh(cfg)
+    except Exception:
+        log.exception("latest failed")
+        return
+    if result != "unchanged":
+        log.info("latest: %s", result)
+
+
 def run_dida(cfg: Config, args, today: date) -> int:
     try:
         if args.dida_command == "auth":
@@ -191,6 +201,7 @@ def main(argv: list[str] | None = None) -> int:
         rep.add_argument("--force", action="store_true", help="overwrite an existing report")
         rep.add_argument("--no-llm", action="store_true", help="statistics only, no model call")
         rep.add_argument("--dry-run", action="store_true", help="write the model input to state/ and stop")
+    sub.add_parser("latest", help="rewrite the 最新日报 entry note")
     dd = sub.add_parser("dida", help="滴答清单: authorize, list upcoming tasks, add a task")
     dsub = dd.add_subparsers(dest="dida_command", required=True)
     dsub.add_parser("auth", help="log in once in the browser")
@@ -218,6 +229,13 @@ def main(argv: list[str] | None = None) -> int:
     today = datetime.now().date()
     if args.command == "dida":
         return run_dida(cfg, args, today)
+    if args.command == "latest":
+        try:
+            log.info("latest: %s", latest.refresh(cfg))
+        except Exception:
+            log.exception("latest failed")
+            return 1
+        return 0
     make = {"week": periodic.Period.week_of, "month": periodic.Period.month_of}
     if args.command in make:
         period = make[args.command](args.date) if args.date else make[args.command](today).previous()
@@ -227,6 +245,8 @@ def main(argv: list[str] | None = None) -> int:
             log.exception("%s failed", period.label)
             return 1
         log.info("%s: %s", period.label, result)
+        if not args.dry_run:
+            refresh_latest(cfg)
         return 0
     if args.date:
         days = [args.date]
@@ -257,4 +277,6 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             if result != "skipped":
                 log.info("%s: %s", period.label, result)
+    if not args.dry_run:
+        refresh_latest(cfg)
     return 1 if failed else 0

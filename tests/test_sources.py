@@ -257,3 +257,50 @@ def test_disclose_folds_project_detail_but_keeps_overview_and_top_items():
     assert "> [!abstract]- 甲\n>\n> 细节一\n>\n> - 细节二\n" in text
     assert "> [!abstract]- 甲\n>\n> - 全部一\n" in text
     assert "### 不折叠" in text and "### 甲" not in text
+
+
+def _touch(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("x", encoding="utf-8")
+
+
+def test_latest_embeds_newest_daily_with_qualified_links_and_caps_earlier(tmp_path):
+    from ai_daily_digest import latest
+    from ai_daily_digest.config import Config
+
+    cfg = Config(vault_dir=tmp_path)
+    root = tmp_path / cfg.digest_folder
+    assert latest.refresh(cfg) == "empty" and not latest.note_path(cfg).exists()
+    for stem in ("2025-12-30", "2025-12-31", "2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04",
+                 "2026-10-05", "2026-10-06", "2026-10-07"):
+        _touch(root / stem[:4] / f"{stem}.md")
+    _touch(root / "2026" / "2026-10-08.md.tmp")
+    _touch(root / "2026" / "notes.md")
+    _touch(root / "2026" / "2026-10-09.txt")
+    text = latest.render(cfg)
+    assert "latest: 2026-10-07\n" in text and text.endswith("![[AI 日报/2026/2026-10-07]]\n")
+    assert "**更早**：[[AI 日报/2026/2026-10-06|10-06]] · [[AI 日报/2026/2026-10-05|10-05]]" in text
+    assert text.count("·") == 6 and "|12-31]]" in text and "12-30" not in text
+    assert "周报" not in text and "月报" not in text
+    _touch(root / "周报" / "2026-W39.md")
+    _touch(root / "周报" / "2026-W40.md")
+    _touch(root / "月报" / "2026-09.md")
+    text = latest.render(cfg)
+    assert "**周报**：[[AI 日报/周报/2026-W40|2026-W40]] · **月报**：[[AI 日报/月报/2026-09|2026-09]]\n" in text
+    assert latest.refresh(cfg).startswith("written ") and latest.refresh(cfg) == "unchanged"
+    assert latest.note_path(cfg).read_text(encoding="utf-8") == text
+
+
+def test_latest_crosses_year_boundary_and_drops_missing_parts(tmp_path):
+    from ai_daily_digest import latest
+    from ai_daily_digest.config import Config
+
+    cfg = Config(vault_dir=tmp_path)
+    root = tmp_path / cfg.digest_folder
+    _touch(root / "2025" / "2025-12-31.md")
+    assert "更早" not in latest.render(cfg)
+    _touch(root / "2026" / "2026-01-02.md")
+    _touch(root / "月报" / "2025-12.md")
+    text = latest.render(cfg)
+    assert "**更早**：[[AI 日报/2025/2025-12-31|12-31]]\n" in text
+    assert "**月报**：[[AI 日报/月报/2025-12|2025-12]]\n" in text and "周报" not in text
