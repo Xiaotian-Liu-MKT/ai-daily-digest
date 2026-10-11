@@ -22,6 +22,7 @@ VERDICTS = {
     "no_change": "无变化",
     "insufficient_data": "数据不足",
 }
+STANCES = {"bullish": "偏多", "bearish": "偏空", "mixed": "分歧", "neutral": "中性"}
 DISCLAIMER = "> 研究参考，不构成交易建议。"
 
 Runner = Callable[[Config, str, dict], dict]
@@ -157,7 +158,7 @@ def _num(v: Any, fmt: str) -> str:
 def _row(inst: dict, item: dict | None) -> str:
     c = inst.get("conclusion") or {}
     q = inst.get("quote") or {}
-    stance = f"{c['stance']}（{str(c.get('researched_at') or '')[:10]}）" if c.get("stance") else "无结论"
+    stance = f"{STANCES.get(c['stance'], c['stance'])}（{str(c.get('researched_at') or '')[:10]}）" if c.get("stance") else "无结论"
     price = _num(q.get("price"), ",.2f")
     if inst.get("change_since_conclusion_pct") is not None:
         price += f" / {_num(inst['change_since_conclusion_pct'], '+.1f')}%"
