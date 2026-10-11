@@ -63,12 +63,10 @@ def run_scan(cfg: Config) -> dict:
         scan = json.loads(proc.stdout)
     except ValueError as exc:
         raise InvestError(f"退出码 {proc.returncode}，输出不是 JSON：{_tail(proc.stderr)}") from exc
-    if (
-        not isinstance(scan, dict)
-        or scan.get("schema") != "daily-scan/1"
-        or not isinstance(scan.get("instruments"), list)
-    ):
-        raise InvestError(f"退出码 {proc.returncode}，JSON 不是 daily-scan/1：{_tail(proc.stderr)}")
+    try:
+        _validate_scan(scan)
+    except InvestError as exc:
+        raise InvestError(f"退出码 {proc.returncode}，{exc}：{_tail(proc.stderr)}") from exc
     return scan
 
 
@@ -188,6 +186,17 @@ def _validate_review(result: dict, scan: dict) -> None:
             raise InvestError("codex 返回的来源格式不对")
     if seen != expected_ids:
         raise InvestError("codex 没有覆盖本次扫描的全部标的")
+
+
+def _validate_scan(scan: dict) -> None:
+    if not isinstance(scan, dict) or scan.get("schema") != "daily-scan/1":
+        raise InvestError("JSON 不是 daily-scan/1")
+    instruments = scan.get("instruments")
+    if not isinstance(instruments, list) or not all(isinstance(inst, dict) for inst in instruments):
+        raise InvestError("JSON 缺少有效的 instruments")
+    ids = [inst.get("id") for inst in instruments]
+    if not all(isinstance(value, str) and value for value in ids) or len(set(ids)) != len(ids):
+        raise InvestError("JSON 的 instrument id 无效或重复")
 
 
 # ------------------------------------------------------------------ render
@@ -315,6 +324,12 @@ def section(cfg: Config, today: date, *, force: bool = False, runner: Runner = c
         path = cache_path(cfg, today)
         cached = {} if force else _read_cache(path)
         scan = cached.get("scan")
+        if scan is not None:
+            try:
+                _validate_scan(scan)
+            except InvestError as exc:
+                log.warning("invest cached scan invalid; rescanning: %s", exc)
+                cached, scan = {}, None
         if scan is None:
             scan = run_scan(cfg)
             cached = {"scan": scan}
@@ -324,6 +339,14 @@ def section(cfg: Config, today: date, *, force: bool = False, runner: Runner = c
         log.warning("invest scan failed: %s", exc)
         return [head, "", f"> 投资研究重跑失败：{exc}", ""]
     result = cached.get("review")
+    if result:
+        try:
+            _validate_review(result, scan)
+        except InvestError as exc:
+            log.warning("invest cached review invalid; retrying: %s", exc)
+            result = None
+            cached = {"scan": scan}
+            _write_cache(path, cached)
     if not result:
         try:
             result = review(cfg, scan, runner, today)

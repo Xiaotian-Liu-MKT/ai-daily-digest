@@ -193,6 +193,26 @@ def test_cached_scan_uses_its_actual_as_of_time(tmp_path, monkeypatch):
     assert first[0] == second[0]
 
 
+def test_invalid_cached_review_is_replaced_without_breaking_the_section(tmp_path, monkeypatch):
+    cfg = make_cfg(tmp_path)
+    path = invest.cache_path(cfg, TODAY)
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"scan": SCAN, "review": {"items": []}}), encoding="utf-8")
+    monkeypatch.setattr(invest, "run_scan", lambda c: pytest.fail("valid cached scan should be reused"))
+    out = invest.section(cfg, TODAY, runner=lambda *args: RESULT)
+    assert "有新机会" in "\n".join(out)
+    assert json.loads(path.read_text(encoding="utf-8"))["review"] == RESULT
+
+
+def test_invalid_cached_scan_is_replaced(tmp_path, monkeypatch):
+    cfg = make_cfg(tmp_path)
+    path = invest.cache_path(cfg, TODAY)
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"scan": {"schema": "wrong", "instruments": [1]}}), encoding="utf-8")
+    monkeypatch.setattr(invest, "run_scan", lambda c: SCAN)
+    assert "有新机会" in "\n".join(invest.section(cfg, TODAY, runner=lambda *args: RESULT))
+
+
 def test_fx_price_keeps_precision():
     inst = {"id": "audusd", "asset_class": "fx", "quote": {"price": 0.65713}, "ok": True}
     assert "0.6571" in invest._row(inst, None)
@@ -231,3 +251,20 @@ def test_run_day_skips_scan_when_note_exists(tmp_path, monkeypatch):
 
     monkeypatch.setattr(invest, "section", boom)
     assert cli.run_day(cfg, yesterday, force=False, use_llm=True, dry_run=False, today=TODAY) == "skipped"
+
+
+@pytest.mark.parametrize("command", ["week", "month"])
+def test_period_cli_no_llm_passes_no_invest_to_daily_backfill(tmp_path, monkeypatch, command):
+    cfg = make_cfg(tmp_path, vault_dir=tmp_path / "vault")
+    seen = {}
+
+    def run_period(*args, **kwargs):
+        seen.update(kwargs)
+        return "empty"
+
+    monkeypatch.setattr(cli, "load_config", lambda: cfg)
+    monkeypatch.setattr(cli, "run_period", run_period)
+    monkeypatch.setattr(cli, "refresh_latest", lambda c: None)
+    monkeypatch.setattr(cli.sys, "stdout", None)
+    assert cli.main([command, "--no-llm"]) == 0
+    assert seen["use_llm"] is False and seen["use_invest"] is False

@@ -215,6 +215,7 @@ def main(argv: list[str] | None = None) -> int:
         rep.add_argument("--date", type=date.fromisoformat, help="any day inside the period to report")
         rep.add_argument("--force", action="store_true", help="overwrite an existing report")
         rep.add_argument("--no-llm", action="store_true", help="statistics only, no model call")
+        rep.add_argument("--no-invest", action="store_true", help="skip the investment scan when filling missing dailies")
         rep.add_argument("--dry-run", action="store_true", help="write the model input to state/ and stop")
     sub.add_parser("latest", help="rewrite the 最新日报 entry note")
     dd = sub.add_parser("dida", help="滴答清单: authorize, list upcoming tasks, add a task")
