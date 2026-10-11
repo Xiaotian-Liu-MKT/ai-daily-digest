@@ -12,7 +12,7 @@ from pathlib import Path
 from .config import Config, load_config
 from .model import Session, Window
 from .render import build_bundle, render_note
-from . import dida, latest, periodic
+from . import dida, invest, latest, periodic
 from .sources import agy, claude_code, codex, worklog
 
 log = logging.getLogger("ai_daily_digest")
@@ -91,14 +91,22 @@ def _write_atomic(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
-def run_day(cfg: Config, day: date, *, force: bool, use_llm: bool, dry_run: bool) -> str:
+def run_day(
+    cfg: Config, day: date, *, force: bool, use_llm: bool, dry_run: bool,
+    today: date | None = None, use_invest: bool = True,
+) -> str:
     target = note_path(cfg, day)
     if not force and not dry_run and (target.exists() or marker_path(cfg, day).exists()):
         return "skipped"
+    today = today or datetime.now().date()
+    # Only the newest day gets the market view; a backfilled older day must not carry today's.
+    invest_lines = (
+        invest.section(cfg, today) if use_invest and not dry_run and day == today - timedelta(days=1) else []
+    )
     window = Window.for_day(day)
     sessions = collect(cfg, window)
     entries = worklog.collect(cfg.vault_dir, day)
-    if not sessions and not entries:
+    if not sessions and not entries and not invest_lines:
         if not dry_run:
             _write_atomic(marker_path(cfg, day), json.dumps({"sessions": 0}))
         return "empty"
@@ -111,9 +119,9 @@ def run_day(cfg: Config, day: date, *, force: bool, use_llm: bool, dry_run: bool
             f"dry-run: {len(sessions)} sessions, {turns} prompts, {len(entries)} worklog "
             f"entries, bundle {len(bundle)} chars -> {out}"
         )
-    body = summarize(cfg, bundle) if use_llm else None
+    body = summarize(cfg, bundle) if use_llm and (sessions or entries) else None
     _write_atomic(
-        target, render_note(window, sessions, entries, body, cfg.model, dida_section(cfg))
+        target, render_note(window, sessions, entries, body, cfg.model, invest_lines + dida_section(cfg))
     )
     return f"written {target}"
 
@@ -129,7 +137,7 @@ def run_period(
     if period.kind == "week" and not dry_run:
         # A weekly report is only as complete as its dailies; fill the ones still missing.
         for day in period.days:
-            result = run_day(cfg, day, force=False, use_llm=use_llm, dry_run=False)
+            result = run_day(cfg, day, force=False, use_llm=use_llm, dry_run=False, today=today)
             if result != "skipped":
                 log.info("%s: %s", day, result)
     dailies = periodic.read_dailies(cfg, period)
@@ -195,6 +203,9 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--force", action="store_true", help="overwrite an existing digest")
     run.add_argument("--no-llm", action="store_true", help="session lists only, no model call")
     run.add_argument("--dry-run", action="store_true", help="write the model input to state/ and stop")
+    run.add_argument("--no-invest", action="store_true", help="skip the investment scan section")
+    inv = sub.add_parser("invest", help="print today's investment section (scan + Codex review)")
+    inv.add_argument("--force", action="store_true", help="ignore today's cache")
     for name, text in (("week", "weekly report (Monday to Sunday)"), ("month", "monthly report")):
         rep = sub.add_parser(name, help=f"write the {text} for the last finished period")
         rep.add_argument("--date", type=date.fromisoformat, help="any day inside the period to report")
@@ -229,6 +240,9 @@ def main(argv: list[str] | None = None) -> int:
     today = datetime.now().date()
     if args.command == "dida":
         return run_dida(cfg, args, today)
+    if args.command == "invest":
+        print("\n".join(invest.section(cfg, today, force=args.force)) or "投资研究未启用或仓库不存在。")
+        return 0
     if args.command == "latest":
         try:
             log.info("latest: %s", latest.refresh(cfg))
@@ -259,7 +273,8 @@ def main(argv: list[str] | None = None) -> int:
             log.warning("%s is not over yet, skipping", day)
             continue
         try:
-            result = run_day(cfg, day, force=args.force, use_llm=not args.no_llm, dry_run=args.dry_run)
+            result = run_day(cfg, day, force=args.force, use_llm=not args.no_llm, dry_run=args.dry_run,
+                             today=today, use_invest=not args.no_invest)
         except Exception:
             # Leave no note and no marker so the next scheduled run retries this day.
             log.exception("%s failed", day)

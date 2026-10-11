@@ -35,6 +35,16 @@ class Config:
     dida_due_days: int = 7
     # API priority -> quadrant of the app's matrix view (its default rules).
     dida_quadrants: dict = field(default_factory=lambda: {"5": 1, "3": 2, "1": 3, "0": 4})
+    # Daily investment scan: re-run the sibling investment-research repo, then ask Codex what changed.
+    invest_enabled: bool = True
+    invest_repo: Path = REPO_ROOT.parent / "investment-research"
+    # Empty: the repo's own .venv interpreter.
+    invest_python: str = ""
+    # Empty: `codex` / `codex.cmd` from PATH.
+    codex_cmd: str = ""
+    codex_model: str = "gpt-6.1-sol"
+    invest_scan_timeout_s: int = 1200
+    codex_timeout_s: int = 900
 
 
 def load_config(path: Path | None = None) -> Config:
