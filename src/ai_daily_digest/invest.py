@@ -22,7 +22,7 @@ VERDICTS = {
     "no_change": "无变化",
     "insufficient_data": "数据不足",
 }
-STANCES = {"bullish": "偏多", "bearish": "偏空", "mixed": "分歧", "neutral": "中性"}
+STANCES = {"bullish": "偏多", "bearish": "偏空", "mixed": "分歧", "unknown": "未知"}
 DISCLAIMER = "> 研究参考，不构成交易建议。"
 
 Runner = Callable[[Config, str, dict], dict]
@@ -63,8 +63,12 @@ def run_scan(cfg: Config) -> dict:
         scan = json.loads(proc.stdout)
     except ValueError as exc:
         raise InvestError(f"退出码 {proc.returncode}，输出不是 JSON：{_tail(proc.stderr)}") from exc
-    if not isinstance(scan, dict) or not isinstance(scan.get("instruments"), list):
-        raise InvestError(f"退出码 {proc.returncode}，JSON 缺少 instruments：{_tail(proc.stderr)}")
+    if (
+        not isinstance(scan, dict)
+        or scan.get("schema") != "daily-scan/1"
+        or not isinstance(scan.get("instruments"), list)
+    ):
+        raise InvestError(f"退出码 {proc.returncode}，JSON 不是 daily-scan/1：{_tail(proc.stderr)}")
     return scan
 
 
@@ -145,9 +149,45 @@ def codex_runner(cfg: Config, prompt: str, schema: dict) -> dict:
 
 def review(cfg: Config, scan: dict, runner: Runner = codex_runner, today: date | None = None) -> dict:
     result = runner(cfg, build_prompt(scan, today or datetime.now().date()), output_schema())
+    _validate_review(result, scan)
+    return result
+
+
+def _validate_review(result: dict, scan: dict) -> None:
+    """Check semantic guarantees which JSON Schema alone cannot express."""
     if not isinstance(result, dict) or not isinstance(result.get("items"), list):
         raise InvestError("codex 返回的格式不对")
-    return result
+    if not isinstance(result.get("has_new_opportunity"), bool) or not isinstance(result.get("summary"), str):
+        raise InvestError("codex 返回缺少摘要或机会标记")
+    if not isinstance(result.get("gaps"), list) or not all(isinstance(g, str) for g in result["gaps"]):
+        raise InvestError("codex 返回的 gaps 格式不对")
+    aliases = {
+        str(inst.get(key) or "").lower(): str(inst.get("id") or "").lower()
+        for inst in scan.get("instruments") or [] for key in ("id", "label")
+        if inst.get(key)
+    }
+    expected_ids = {str(inst.get("id") or "").lower() for inst in scan.get("instruments") or []} - {""}
+    seen: set[str] = set()
+    for item in result["items"]:
+        if not isinstance(item, dict):
+            raise InvestError("codex 返回了无效标的项")
+        name = item.get("instrument")
+        canonical = aliases.get(name.lower()) if isinstance(name, str) else None
+        if not canonical or canonical in seen:
+            raise InvestError("codex 返回的标的缺失、重复或不属于本次扫描")
+        seen.add(canonical)
+        if item.get("verdict") not in VERDICTS:
+            raise InvestError("codex 返回了无效判断")
+        if not all(isinstance(item.get(key), str) for key in ("headline", "evidence")):
+            raise InvestError("codex 返回的标的说明格式不对")
+        if not isinstance(item.get("conditions_hit"), list) or not all(isinstance(x, str) for x in item["conditions_hit"]):
+            raise InvestError("codex 返回的条件格式不对")
+        if item.get("next_check") is not None and not isinstance(item["next_check"], str):
+            raise InvestError("codex 返回的下次检查格式不对")
+        if not isinstance(item.get("sources"), list) or not all(isinstance(x, str) for x in item["sources"]):
+            raise InvestError("codex 返回的来源格式不对")
+    if seen != expected_ids:
+        raise InvestError("codex 没有覆盖本次扫描的全部标的")
 
 
 # ------------------------------------------------------------------ render
@@ -159,7 +199,7 @@ def _row(inst: dict, item: dict | None) -> str:
     c = inst.get("conclusion") or {}
     q = inst.get("quote") or {}
     stance = f"{STANCES.get(c['stance'], c['stance'])}（{str(c.get('researched_at') or '')[:10]}）" if c.get("stance") else "无结论"
-    price = _num(q.get("price"), ",.2f")
+    price = _num(q.get("price"), ",.4f" if inst.get("asset_class") == "fx" else ",.2f")
     if inst.get("change_since_conclusion_pct") is not None:
         price += f" / {_num(inst['change_since_conclusion_pct'], '+.1f')}%"
     if not inst.get("ok"):
@@ -185,8 +225,13 @@ def _gaps(result: dict | None, scan: dict) -> list[str]:
         age = inst.get("conclusion_age_hours")
         if not inst.get("ok"):
             gaps.append(f"{name}：重跑失败（{inst.get('error') or '未知原因'}）")
-        elif c and ((age or 0) > STALE_HOURS or c.get("review_status") not in (None, "reviewed")):
-            gaps.append(f"{name}：原结论已过期或未复核（{_num(age and age / 24, '.0f')} 天，{c.get('review_status')}）")
+        elif c and (
+            (age or 0) > STALE_HOURS
+            or c.get("status") not in (None, "reviewed")
+            or c.get("review_status") not in (None, "reviewed")
+        ):
+            status = c.get("status") or c.get("review_status") or "未知"
+            gaps.append(f"{name}：原结论已过期或需复核（{_num(age and age / 24, '.0f')} 天，{status}）")
         elif not c:
             gaps.append(f"{name}：没有已保存的研究结论")
     return gaps
@@ -244,6 +289,17 @@ def _write_cache(path: Path, data: dict) -> None:
     os.replace(tmp, path)
 
 
+def _scan_time(scan: dict, fallback: datetime) -> datetime:
+    """Use the scan's real as-of time, including when today's cache is reused."""
+    raw = scan.get("generated_at")
+    if not isinstance(raw, str):
+        return fallback
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone()
+    except ValueError:
+        return fallback
+
+
 def section(cfg: Config, today: date, *, force: bool = False, runner: Runner = codex_runner) -> list[str]:
     """The note section for today; never raises."""
     if not cfg.invest_enabled:
@@ -252,7 +308,8 @@ def section(cfg: Config, today: date, *, force: bool = False, runner: Runner = c
     if not cfg.invest_repo.is_dir():
         log.info("invest skipped: %s not found", cfg.invest_repo)
         return []
-    when = datetime.now()
+    now = datetime.now().astimezone()
+    when = now
     head = f"## 投资机会（截至 {when:%H:%M}，Codex {cfg.codex_model}）"
     try:
         path = cache_path(cfg, today)
@@ -262,6 +319,7 @@ def section(cfg: Config, today: date, *, force: bool = False, runner: Runner = c
             scan = run_scan(cfg)
             cached = {"scan": scan}
             _write_cache(path, cached)
+        when = _scan_time(scan, now)
     except Exception as exc:  # noqa: BLE001
         log.warning("invest scan failed: %s", exc)
         return [head, "", f"> 投资研究重跑失败：{exc}", ""]

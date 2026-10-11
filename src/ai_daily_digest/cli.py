@@ -127,7 +127,8 @@ def run_day(
 
 
 def run_period(
-    cfg: Config, period: periodic.Period, today: date, *, force: bool, use_llm: bool, dry_run: bool
+    cfg: Config, period: periodic.Period, today: date, *, force: bool, use_llm: bool, dry_run: bool,
+    use_invest: bool = True,
 ) -> str:
     target = period.path(cfg)
     if period.end >= today:
@@ -137,7 +138,10 @@ def run_period(
     if period.kind == "week" and not dry_run:
         # A weekly report is only as complete as its dailies; fill the ones still missing.
         for day in period.days:
-            result = run_day(cfg, day, force=False, use_llm=use_llm, dry_run=False, today=today)
+            result = run_day(
+                cfg, day, force=False, use_llm=use_llm, dry_run=False, today=today,
+                use_invest=use_invest,
+            )
             if result != "skipped":
                 log.info("%s: %s", day, result)
     dailies = periodic.read_dailies(cfg, period)
@@ -254,7 +258,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command in make:
         period = make[args.command](args.date) if args.date else make[args.command](today).previous()
         try:
-            result = run_period(cfg, period, today, force=args.force, use_llm=not args.no_llm, dry_run=args.dry_run)
+            result = run_period(
+                cfg, period, today, force=args.force, use_llm=not args.no_llm, dry_run=args.dry_run,
+                use_invest=not args.no_invest and not args.no_llm,
+            )
         except Exception:
             log.exception("%s failed", period.label)
             return 1
@@ -274,7 +281,7 @@ def main(argv: list[str] | None = None) -> int:
             continue
         try:
             result = run_day(cfg, day, force=args.force, use_llm=not args.no_llm, dry_run=args.dry_run,
-                             today=today, use_invest=not args.no_invest)
+                             today=today, use_invest=not args.no_invest and not args.no_llm)
         except Exception:
             # Leave no note and no marker so the next scheduled run retries this day.
             log.exception("%s failed", day)
@@ -285,7 +292,10 @@ def main(argv: list[str] | None = None) -> int:
         # The scheduled run also owes the reports of the week and month that just ended.
         for period in (periodic.Period.week_of(today).previous(), periodic.Period.month_of(today).previous()):
             try:
-                result = run_period(cfg, period, today, force=False, use_llm=not args.no_llm, dry_run=False)
+                result = run_period(
+                    cfg, period, today, force=False, use_llm=not args.no_llm, dry_run=False,
+                    use_invest=not args.no_invest and not args.no_llm,
+                )
             except Exception:
                 log.exception("%s failed", period.label)
                 failed = True

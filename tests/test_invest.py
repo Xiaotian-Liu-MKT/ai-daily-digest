@@ -33,6 +33,8 @@ RESULT = {
          "next_check": "下周财报电话会", "sources": ["https://example.com/a"]},
         {"instrument": "UNH", "verdict": "no_change", "headline": "无新增证据", "evidence": "",
          "conditions_hit": [], "next_check": None, "sources": []},
+        {"instrument": "audusd", "verdict": "insufficient_data", "headline": "行情超时", "evidence": "",
+         "conditions_hit": [], "next_check": None, "sources": []},
     ],
     "gaps": ["未找到澳联储最新纪要"],
 }
@@ -79,6 +81,14 @@ def test_run_scan_errors(tmp_path, monkeypatch):
     with pytest.raises(invest.InvestError) as exc:
         invest.run_scan(cfg)
     assert "BOOM" in str(exc.value) and len(str(exc.value)) < 500
+
+
+def test_run_scan_rejects_an_unrecognised_document(tmp_path, monkeypatch):
+    cfg = make_cfg(tmp_path)
+    fake_python(cfg)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Proc('{"instruments": []}'))
+    with pytest.raises(invest.InvestError, match="daily-scan/1"):
+        invest.run_scan(cfg)
 
 
 def test_section_missing_repo_or_disabled(tmp_path):
@@ -145,7 +155,7 @@ def test_render_section():
     assert "| 标的 | 原结论 | 今日价格/较结论 | 判断 | 要点 |" in text
     assert "| Alphabet | 观望（2026-10-08） | 190.50 / +6.2% | 新机会 | 云业务指引上调 |" in text
     assert "重跑失败" in text and "[https://example.com/a](https://example.com/a)" in text
-    assert "> [!info]- 缺口与失败" in text and "UNH：原结论已过期" in text
+    assert "> [!info]- 缺口与失败" in text and "UNH：原结论已过期或需复核" in text
     assert lines[-2] == "> 研究参考，不构成交易建议。"
 
 
@@ -166,6 +176,32 @@ def test_codex_command_line(tmp_path, monkeypatch):
     assert cmd[0] == "codex-bin" and "--ephemeral" in cmd and "--search" in cmd
     assert cmd[cmd.index("--sandbox") + 1] == "read-only" and cmd[cmd.index("-m") + 1] == "gpt-6.1-sol"
     assert "2026-10-10" in seen["input"]
+
+
+def test_review_requires_every_scanned_instrument(tmp_path):
+    cfg = make_cfg(tmp_path)
+    incomplete = {**RESULT, "items": RESULT["items"][:-1]}
+    with pytest.raises(invest.InvestError, match="全部标的"):
+        invest.review(cfg, SCAN, lambda *args: incomplete, TODAY)
+
+
+def test_cached_scan_uses_its_actual_as_of_time(tmp_path, monkeypatch):
+    cfg = make_cfg(tmp_path)
+    monkeypatch.setattr(invest, "run_scan", lambda c: SCAN)
+    first = invest.section(cfg, TODAY, runner=lambda *args: RESULT)
+    second = invest.section(cfg, TODAY, runner=lambda *args: pytest.fail("cached review expected"))
+    assert first[0] == second[0]
+
+
+def test_fx_price_keeps_precision():
+    inst = {"id": "audusd", "asset_class": "fx", "quote": {"price": 0.65713}, "ok": True}
+    assert "0.6571" in invest._row(inst, None)
+
+
+def test_dynamic_conclusion_review_status_is_reported_as_a_gap():
+    scan = json.loads(json.dumps(SCAN))
+    scan["instruments"][0]["conclusion"]["status"] = "needs_review"
+    assert any("needs_review" in gap for gap in invest._gaps(RESULT, scan))
 
 
 def test_run_day_adds_section_only_for_yesterday(tmp_path, monkeypatch):
