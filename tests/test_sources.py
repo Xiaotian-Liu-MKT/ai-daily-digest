@@ -2,6 +2,8 @@ import json
 import os
 from datetime import date, datetime, timedelta, timezone
 
+import pytest
+
 from ai_daily_digest.model import Window, build_turns
 from ai_daily_digest.sources import agy, claude_code, codex
 
@@ -205,6 +207,24 @@ def test_dida_add_task_sends_quadrant_as_priority_and_all_day_due(monkeypatch):
     assert dida.parse_due(sent["dueDate"]).astimezone().date() == date(2026, 10, 15)
 
 
+def test_dida_timeout_is_a_recoverable_dida_error(monkeypatch):
+    from ai_daily_digest import dida
+
+    class TimedOutResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            raise TimeoutError("read timed out")
+
+    monkeypatch.setattr(dida.urllib.request, "urlopen", lambda *args, **kwargs: TimedOutResponse())
+    with pytest.raises(dida.DidaError, match="read timed out"):
+        dida._request("GET", "https://example.test", headers={})
+
+
 def test_periods_cover_whole_weeks_and_months():
     from ai_daily_digest.periodic import Period
 
@@ -241,6 +261,31 @@ def test_weekly_report_uses_daily_bodies_and_counts(tmp_path):
     assert "> - 补附录（甲，[[AI 工作留痕/entries/2026/2026-10/a/20261009-x|写完甲]]）" in text
     # A report's own appendix must not leak into the body the monthly report reads.
     assert periodic._split(text)[1] == "## 本周概览\n\n好。"
+
+
+def test_periodic_bundle_compresses_every_day_without_losing_worklog_or_late_days(tmp_path):
+    from ai_daily_digest import periodic
+    from ai_daily_digest.config import Config
+    from ai_daily_digest.sources.worklog import WorklogEntry
+
+    cfg = Config(bundle_budget=1800)
+    period = periodic.Period.week_of(date(2026, 10, 9))
+    dailies = {
+        day: ({}, "## 概览\n\n" + ("甲" if n == 0 else "乙") * 4000)
+        for n, day in enumerate(period.days)
+    }
+    entry = WorklogEntry("late", "期末留痕", "codex-app", "s", "项目", "E:/a", "a", "completed", "完成", "", [], period.end)
+    bundle = periodic.build_bundle(cfg, period, dailies, [entry], {})
+    assert len(bundle) <= cfg.bundle_budget
+    assert "## 输入压缩说明" in bundle and "期末留痕" in bundle
+    assert f"## 日报 {period.start}" in bundle and f"## 日报 {period.end}" in bundle
+
+
+def test_periodic_split_excludes_the_daily_investment_snapshot():
+    from ai_daily_digest import periodic
+
+    _, body = periodic._split("# AI 日报\n\n## 概览\n\n工作。\n\n## 投资机会（截至 08:00）\n\n今日扫描。\n")
+    assert body == "## 概览\n\n工作。"
 
 
 def test_disclose_folds_project_detail_but_keeps_overview_and_top_items():

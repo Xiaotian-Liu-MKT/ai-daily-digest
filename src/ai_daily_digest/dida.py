@@ -64,8 +64,11 @@ def _request(method: str, url: str, *, headers: dict, data: bytes | None = None)
         if exc.code == 401:
             raise NotConfigured("Dida365 token rejected; run `ai-daily-digest dida auth` again") from exc
         raise DidaError(f"{method} {url} -> HTTP {exc.code}: {detail}") from exc
-    except urllib.error.URLError as exc:
-        raise DidaError(f"{method} {url} failed: {exc.reason}") from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        # ``resp.read()`` can time out after urlopen has returned, so this
+        # must cover the whole request rather than only connection errors.
+        detail = getattr(exc, "reason", None) or str(exc) or "timed out"
+        raise DidaError(f"{method} {url} failed: {detail}") from exc
     return json.loads(body) if body.strip() else None
 
 

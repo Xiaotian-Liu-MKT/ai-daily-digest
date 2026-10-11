@@ -11,3 +11,13 @@ dida_due_days = 7
 
 # Shelved projects: reports describe them but list no follow-ups.
 shelved_projects = []
+
+# Daily investment scan (sibling repo investment-research + Codex CLI). Set
+# invest_enabled = false to skip; a missing repo is skipped quietly.
+# invest_repo = "E:/GitHub/investment-research"
+# invest_python = ""   # empty: <invest_repo>/.venv/Scripts/python.exe (Windows) or .venv/bin/python
+# codex_cmd = ""       # empty: codex / codex.cmd from PATH
+invest_enabled = true
+codex_model = "gpt-6.1-sol"
+invest_scan_timeout_s = 1200
+codex_timeout_s = 900

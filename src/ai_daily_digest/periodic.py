@@ -132,7 +132,7 @@ def _split(text: str) -> tuple[dict[str, str], str]:
     start = text.find("\n## ")
     body = text[start + 1:] if start >= 0 else ""
     # Everything from the first generated appendix on is tables and links, not prose.
-    for heading in ("\n## 滴答清单", "\n## 会话清单", "\n## 每日统计", "\n" + APPENDIX):
+    for heading in ("\n## 投资机会", "\n## 滴答清单", "\n## 会话清单", "\n## 每日统计", "\n" + APPENDIX):
         cut = body.find(heading)
         if cut >= 0:
             body = body[:cut]
@@ -188,21 +188,39 @@ def build_bundle(
     head = template.format(
         label=period.label, start=period.start, end=period.end, rules=_RULES, shelved=shelved
     )
-    summary_cap = 160 if period.kind == "week" else 0
-    while True:
-        parts = [head]
-        if period.kind == "week":
-            parts += [f"## 日报 {day}\n\n{body}" for day, (_, body) in sorted(dailies.items())]
-        else:
-            parts += [f"## 周报 {label}\n\n{body}" for label, body in sorted(weeklies.items())]
-            overviews = [f"- {day}：{_overview(body)}" for day, (_, body) in sorted(dailies.items()) if _overview(body)]
-            if overviews:
-                parts.append("## 每日概览\n\n" + "\n".join(overviews))
-        parts.append(_worklog_block(entries, summary_cap))
-        bundle = "\n\n".join(parts)
-        if len(bundle) <= cfg.bundle_budget or summary_cap == 0:
-            return bundle[: cfg.bundle_budget * 2]
-        summary_cap = 0 if summary_cap <= 60 else summary_cap // 2
+    summary_caps = [160, 80, 0] if period.kind == "week" else [0]
+    # Preserve every dated source and every worklog line.  Under pressure,
+    # shorten each source evenly instead of slicing the assembled string,
+    # which used to silently erase late-week material and the worklog block.
+    source_caps: list[int | None] = [None, 6000, 3000, 1200, 500, 0]
+    for summary_cap in summary_caps:
+        for source_cap in source_caps:
+            compressed = summary_cap != summary_caps[0] or source_cap is not None
+            def source_block(heading: str, body: str) -> str:
+                if source_cap is None or len(body) <= source_cap:
+                    shown = body
+                elif source_cap == 0:
+                    shown = "（正文因输入预算已压缩；详见原日报或周报。）"
+                else:
+                    shown = _clip(body, source_cap)
+                return f"{heading}\n\n{shown}"
+            parts = [head]
+            if period.kind == "week":
+                parts += [source_block(f"## 日报 {day}", body) for day, (_, body) in sorted(dailies.items())]
+            else:
+                parts += [source_block(f"## 周报 {label}", body) for label, body in sorted(weeklies.items())]
+                overviews = [f"- {day}：{_overview(body)}" for day, (_, body) in sorted(dailies.items()) if _overview(body)]
+                if overviews:
+                    parts.append("## 每日概览\n\n" + "\n".join(overviews))
+            if compressed:
+                parts.append("## 输入压缩说明\n已保留全期日期覆盖和全部留痕；日报或周报正文已按每项压缩。")
+            parts.append(_worklog_block(entries, summary_cap))
+            bundle = "\n\n".join(parts)
+            if len(bundle) <= cfg.bundle_budget:
+                return bundle
+    # A worklog-only bundle may itself exceed the budget.  Do not silently
+    # discard it: its complete audit trail is more valuable than a hard cap.
+    return bundle
 
 
 def render_note(

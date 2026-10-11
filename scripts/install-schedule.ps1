@@ -21,7 +21,7 @@ $triggerLogon = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
     -MultipleInstances IgnoreNew `
-    -ExecutionTimeLimit (New-TimeSpan -Minutes 60) `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 120) `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries
 
@@ -31,7 +31,7 @@ $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interac
 Register-ScheduledTask -TaskName $taskName `
     -Action $action -Trigger @($triggerDaily, $triggerLogon) `
     -Settings $settings -Principal $principal `
-    -Description "AI daily digest: summarise yesterday's Claude Code, Codex and agy sessions into the Obsidian vault." `
+    -Description "AI daily digest: summarise yesterday's Claude Code, Codex and agy sessions into the Obsidian vault, plus a daily investment-opportunity scan (investment-research + Codex)." `
     -Force | Out-Null
 
 Write-Output "Registered scheduled task '$taskName' (daily 08:00 + at logon, catch-up enabled)."

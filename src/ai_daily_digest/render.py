@@ -236,7 +236,8 @@ def render_note(
         f"# AI 日报 {day.isoformat()}",
         "",
     ]
-    out = front + [disclose(body) if body else "> 本篇未调用模型，只有下面的会话清单。", ""]
+    none_note = "> 本篇未调用模型，只有下面的会话清单。" if sessions or entries else "> 当天没有 AI 会话。"
+    out = front + [disclose(body) if body else none_note, ""]
     out += extra or []
 
     table = ["| 工具 | 会话 | 目录 | 时间 | 输入 | 子 agent | 留痕 |", "|---|---|---|---|---|---|---|"]
