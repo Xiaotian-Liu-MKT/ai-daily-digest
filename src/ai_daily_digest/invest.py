@@ -346,7 +346,12 @@ def section(cfg: Config, today: date, *, force: bool = False, runner: Runner = c
             log.warning("invest cached review invalid; retrying: %s", exc)
             result = None
             cached = {"scan": scan}
-            _write_cache(path, cached)
+            try:
+                _write_cache(path, cached)
+            except OSError as write_exc:
+                # Cache cleanup is optional.  A locked cache must not stop
+                # the digest from retrying the review or writing the note.
+                log.warning("invest cached review cleanup failed: %s", write_exc)
     if not result:
         try:
             result = review(cfg, scan, runner, today)

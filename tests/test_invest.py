@@ -204,6 +204,26 @@ def test_invalid_cached_review_is_replaced_without_breaking_the_section(tmp_path
     assert json.loads(path.read_text(encoding="utf-8"))["review"] == RESULT
 
 
+def test_locked_cached_review_cleanup_does_not_stop_the_retry(tmp_path, monkeypatch):
+    cfg = make_cfg(tmp_path)
+    path = invest.cache_path(cfg, TODAY)
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"scan": SCAN, "review": {"items": []}}), encoding="utf-8")
+    original_write = invest._write_cache
+    calls = 0
+
+    def locked_once(target, data):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise PermissionError("cache is locked")
+        original_write(target, data)
+
+    monkeypatch.setattr(invest, "_write_cache", locked_once)
+    out = invest.section(cfg, TODAY, runner=lambda *args: RESULT)
+    assert "有新机会" in "\n".join(out) and calls == 2
+
+
 def test_invalid_cached_scan_is_replaced(tmp_path, monkeypatch):
     cfg = make_cfg(tmp_path)
     path = invest.cache_path(cfg, TODAY)
