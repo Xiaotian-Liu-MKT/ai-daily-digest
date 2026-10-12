@@ -185,6 +185,37 @@ def test_review_requires_every_scanned_instrument(tmp_path):
         invest.review(cfg, SCAN, lambda *args: incomplete, TODAY)
 
 
+def test_review_pins_instrument_to_scanned_ids(tmp_path):
+    seen = {}
+
+    def runner(c, prompt, schema):
+        seen.update(prompt=prompt, schema=schema)
+        return RESULT
+
+    invest.review(make_cfg(tmp_path), SCAN, runner, TODAY)
+    item = seen["schema"]["properties"]["items"]["items"]
+    assert item["properties"]["instrument"]["enum"] == ["googl", "audusd", "unh"]
+    assert "原样填写" in seen["prompt"]
+
+
+def test_ticker_suffix_on_a_name_still_matches_its_instrument(tmp_path):
+    names = {"googl": "Alphabet（GOOGL）", "UNH": "UNH (UNH)", "audusd": "澳元（AUD/USD）"}
+    decorated = {**RESULT, "items": [{**i, "instrument": names[i["instrument"]]} for i in RESULT["items"]]}
+    assert invest.review(make_cfg(tmp_path), SCAN, lambda *args: decorated, TODAY) == decorated
+    text = "\n".join(invest.render_section(decorated, SCAN, datetime(2026, 10, 10, 8, 5)))
+    assert "| Alphabet | 观望（2026-10-08） | 190.50 / +6.2% | 新机会 | 云业务指引上调 |" in text
+    assert "- **Alphabet（新机会）**" in text
+    unknown = {**RESULT, "items": [{**RESULT["items"][0], "instrument": "Tesla（TSLA）"}, *RESULT["items"][1:]]}
+    with pytest.raises(invest.InvestError, match="不属于本次扫描"):
+        invest.review(make_cfg(tmp_path), SCAN, lambda *args: unknown, TODAY)
+
+
+def test_only_a_bare_url_source_is_wrapped_as_a_link():
+    assert invest._source("https://example.com/a") == "[https://example.com/a](https://example.com/a)"
+    assert invest._source("[标题](https://example.com/a)") == "[标题](https://example.com/a)"
+    assert invest._source("用户提供的 JSON") == "用户提供的 JSON"
+
+
 def test_cached_scan_uses_its_actual_as_of_time(tmp_path, monkeypatch):
     cfg = make_cfg(tmp_path)
     monkeypatch.setattr(invest, "run_scan", lambda c: SCAN)

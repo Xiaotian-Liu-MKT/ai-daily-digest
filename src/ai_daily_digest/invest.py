@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -24,6 +25,9 @@ VERDICTS = {
 }
 STANCES = {"bullish": "偏多", "bearish": "偏空", "mixed": "分歧", "unknown": "未知"}
 DISCLAIMER = "> 研究参考，不构成交易建议。"
+# Codex likes to decorate a name with its ticker: "Alphabet（GOOGL）".
+_TICKER_SUFFIX = re.compile(r"\s*[（(][^（()）]*[)）]\s*$")
+_BARE_URL = re.compile(r"https?://\S+")
 
 Runner = Callable[[Config, str, dict], dict]
 
@@ -71,14 +75,15 @@ def run_scan(cfg: Config) -> dict:
 
 
 # ------------------------------------------------------------------- codex
-def output_schema() -> dict:
+def output_schema(ids: list[str] | None = None) -> dict:
+    """`ids` pins `instrument` to the scanned ids, so Codex cannot rename a row."""
     text_or_null = {"type": ["string", "null"]}
     strings = {"type": "array", "items": {"type": "string"}}
     item = {
         "type": "object", "additionalProperties": False,
         "required": ["instrument", "verdict", "headline", "evidence", "conditions_hit", "next_check", "sources"],
         "properties": {
-            "instrument": {"type": "string"},
+            "instrument": {"type": "string", "enum": ids} if ids else {"type": "string"},
             "verdict": {"type": "string", "enum": list(VERDICTS)},
             "headline": {"type": "string"},
             "evidence": {"type": "string"},
@@ -109,7 +114,9 @@ def build_prompt(scan: dict, today: date) -> str:
 2. 不给仓位、下单或个性化建议；只是研究参考。
 3. 没有变化就如实说没有。“没有新机会”是正常且常见的答案，不要为了有内容而硬凑。
 4. 结论过旧（超过 7 天）、review_status 不是 reviewed、或标的重跑失败（ok=false），写入 gaps，并对该标的给 insufficient_data 或按已有证据判断。
-5. items 覆盖每个标的各一条；summary 用中文，不超过三句；其余字段也用中文。
+5. items 覆盖每个标的各一条；instrument 必须原样填写该标的在 JSON 中的 id（如 googl），不加名称、代码或括号。
+6. sources 每项只填一个完整的 http(s) 链接，不写标题、说明或 Markdown；JSON 本身不是来源，不要列入。
+7. summary 用中文，不超过三句；其余字段也用中文。
 
 数据：
 {data}
@@ -146,9 +153,26 @@ def codex_runner(cfg: Config, prompt: str, schema: dict) -> dict:
 
 
 def review(cfg: Config, scan: dict, runner: Runner = codex_runner, today: date | None = None) -> dict:
-    result = runner(cfg, build_prompt(scan, today or datetime.now().date()), output_schema())
+    ids = [inst["id"] for inst in scan.get("instruments") or [] if inst.get("id")]
+    result = runner(cfg, build_prompt(scan, today or datetime.now().date()), output_schema(ids))
     _validate_review(result, scan)
     return result
+
+
+def _aliases(scan: dict) -> dict[str, str]:
+    """Lower-cased id and label of every scanned instrument -> its lower-cased id."""
+    return {
+        str(inst.get(key) or "").lower(): str(inst.get("id") or "").lower()
+        for inst in scan.get("instruments") or [] for key in ("id", "label")
+        if inst.get(key)
+    }
+
+
+def _instrument_id(name: Any, aliases: dict[str, str]) -> str | None:
+    if not isinstance(name, str):
+        return None
+    key = name.strip().lower()
+    return aliases.get(key) or aliases.get(_TICKER_SUFFIX.sub("", key))
 
 
 def _validate_review(result: dict, scan: dict) -> None:
@@ -159,18 +183,13 @@ def _validate_review(result: dict, scan: dict) -> None:
         raise InvestError("codex 返回缺少摘要或机会标记")
     if not isinstance(result.get("gaps"), list) or not all(isinstance(g, str) for g in result["gaps"]):
         raise InvestError("codex 返回的 gaps 格式不对")
-    aliases = {
-        str(inst.get(key) or "").lower(): str(inst.get("id") or "").lower()
-        for inst in scan.get("instruments") or [] for key in ("id", "label")
-        if inst.get(key)
-    }
+    aliases = _aliases(scan)
     expected_ids = {str(inst.get("id") or "").lower() for inst in scan.get("instruments") or []} - {""}
     seen: set[str] = set()
     for item in result["items"]:
         if not isinstance(item, dict):
             raise InvestError("codex 返回了无效标的项")
-        name = item.get("instrument")
-        canonical = aliases.get(name.lower()) if isinstance(name, str) else None
+        canonical = _instrument_id(item.get("instrument"), aliases)
         if not canonical or canonical in seen:
             raise InvestError("codex 返回的标的缺失、重复或不属于本次扫描")
         seen.add(canonical)
@@ -221,9 +240,14 @@ def _row(inst: dict, item: dict | None) -> str:
     return "| " + " | ".join(_cell(str(x)) for x in cells) + " |"
 
 
-def _find(items: list[dict], inst: dict) -> dict | None:
-    keys = {str(inst.get(k) or "").lower() for k in ("id", "label")} - {""}
-    return next((i for i in items if str(i.get("instrument") or "").lower() in keys), None)
+def _find(items: list[dict], inst: dict, aliases: dict[str, str]) -> dict | None:
+    want = str(inst.get("id") or "").lower()
+    return next((i for i in items if want and _instrument_id(i.get("instrument"), aliases) == want), None)
+
+
+def _source(src: str) -> str:
+    """A bare URL becomes a link; a markdown link or a plain remark is kept as written."""
+    return f"[{src}]({src})" if _BARE_URL.fullmatch(src) else src
 
 
 def _gaps(result: dict | None, scan: dict) -> list[str]:
@@ -256,20 +280,23 @@ def render_section(
         lines += [f"**{flag}。** {result.get('summary') or ''}".rstrip(), ""]
     lines += [f"> {n}" for n in notes or []] + ([""] if notes else [])
     insts = scan.get("instruments") or []
+    aliases = _aliases(scan)
+    labels = {str(i.get("id") or "").lower(): i.get("label") or i.get("id") for i in insts}
     if insts:
         lines += ["| 标的 | 原结论 | 今日价格/较结论 | 判断 | 要点 |", "|---|---|---|---|---|"]
-        lines += [_row(i, _find(items, i)) for i in insts]
+        lines += [_row(i, _find(items, i, aliases)) for i in insts]
         lines.append("")
     for it in items:
         if it.get("verdict") not in ("new_opportunity", "risk_up"):
             continue
-        lines.append(f"- **{it.get('instrument')}（{VERDICTS[it['verdict']]}）**：{it.get('evidence') or it.get('headline')}")
+        name = labels.get(_instrument_id(it.get("instrument"), aliases)) or it.get("instrument")
+        lines.append(f"- **{name}（{VERDICTS[it['verdict']]}）**：{it.get('evidence') or it.get('headline')}")
         hit = [str(x) for x in it.get("conditions_hit") or []]
         if hit:
             lines.append(f"  - 触及条件：{'；'.join(hit)}")
         if it.get("next_check"):
             lines.append(f"  - 下次检查：{it['next_check']}")
-        lines += [f"  - 来源：[{u}]({u})" for u in it.get("sources") or []]
+        lines += [f"  - 来源：{_source(str(u))}" for u in it.get("sources") or []]
     if any(i.get("verdict") in ("new_opportunity", "risk_up") for i in items):
         lines.append("")
     gaps = _gaps(result, scan)
