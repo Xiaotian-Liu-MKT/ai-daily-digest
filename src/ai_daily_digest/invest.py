@@ -270,6 +270,26 @@ def _gaps(result: dict | None, scan: dict) -> list[str]:
     return gaps
 
 
+def _pct(v: Any) -> str:
+    return f"{v:.0%}" if isinstance(v, (int, float)) else "—"
+
+
+def _heat_lines(insts: list[dict]) -> list[str]:
+    """A-share heat reading from the scan: a caution flag for chasing, not a buy or sell signal."""
+    rows = [(i.get("label") or i.get("id") or "?", i["heat"]) for i in insts if isinstance(i.get("heat"), dict)]
+    if not rows:
+        return []
+    first = rows[0][1]
+    lines = [f"A 股热度（全 A 股 {first.get('universe_size', '?')} 只，截至 {first.get('as_of', '?')}；分位越高越热）："]
+    for name, h in rows:
+        where = "**在最热五分之一**" if h.get("hot") else "不在最热五分之一"
+        lines.append(
+            f"- {name}：综合 {_pct(h.get('heat_pct'))}，{where}"
+            f"（近 20 日涨幅 {_pct(h.get('gain20_pct'))}、放量 {_pct(h.get('abn_volume_pct'))}、大阳线 {_pct(h.get('max20_pct'))}）"
+        )
+    return lines + ["- 最热五分之一的股票历史上之后 10–20 日平均偏弱；仅作是否追高的参考。", ""]
+
+
 def render_section(
     result: dict | None, scan: dict, when: datetime, model: str = "gpt-6.1-sol", notes: list[str] | None = None
 ) -> list[str]:
@@ -286,6 +306,7 @@ def render_section(
         lines += ["| 标的 | 原结论 | 今日价格/较结论 | 判断 | 要点 |", "|---|---|---|---|---|"]
         lines += [_row(i, _find(items, i, aliases)) for i in insts]
         lines.append("")
+        lines += _heat_lines(insts)
     for it in items:
         if it.get("verdict") not in ("new_opportunity", "risk_up"):
             continue

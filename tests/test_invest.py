@@ -159,6 +159,18 @@ def test_render_section():
     assert lines[-2] == "> 研究参考，不构成交易建议。"
 
 
+def test_heat_reading_is_listed_for_a_shares_only():
+    scan = json.loads(json.dumps(SCAN))
+    assert "A 股热度" not in "\n".join(invest.render_section(RESULT, scan, datetime(2026, 10, 10, 8, 5)))
+    scan["instruments"][0]["heat"] = {"as_of": "2026-10-12", "universe_size": 4853, "heat_pct": 0.91, "hot": True,
+                                      "gain20_pct": 0.95, "abn_volume_pct": 0.8, "max20_pct": None}
+    scan["instruments"][2]["heat"] = None
+    text = "\n".join(invest.render_section(RESULT, scan, datetime(2026, 10, 10, 8, 5)))
+    assert "A 股热度（全 A 股 4853 只，截至 2026-10-12；分位越高越热）：" in text
+    assert "- Alphabet：综合 91%，**在最热五分之一**（近 20 日涨幅 95%、放量 80%、大阳线 —）" in text
+    assert "UNH：综合" not in text
+
+
 def test_codex_command_line(tmp_path, monkeypatch):
     cfg = make_cfg(tmp_path, codex_cmd="codex-bin")
     seen = {}
